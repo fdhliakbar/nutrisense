@@ -6,12 +6,17 @@
   <p>Website rekomendasi menu masakan dengan nutrisi sesuai input gender dan umur pengguna, serta menyesuaikan makanan dengan kata kunci yang diberikan.</</p>
 </div>
 
-## 🚀 Features
+## Features
 - **Personalized nutrition recommendations** based on user profile
 - **Gender and age-based calculations** for accurate nutritional needs
 - **Food search by keywords** to find specific dishes
 - **Modern Vue.js frontend** with responsive design
 - **Flask REST API backend** for robust data processing
+
+---
+
+## Flowchart
+<img src="./flowchart.png"/>
 
 ---
 
