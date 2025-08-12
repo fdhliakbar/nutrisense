@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
+
+// API Base URL
+const API_BASE_URL = 'http://localhost:5000'
 
 // Reactive state
 const isLogin = ref(true)
 const showPassword = ref(false)
+const isLoading = ref(false)
+const errorMessage = ref('')
+const successMessage = ref('')
+const needsEmailConfirmation = ref(false)
+const lastRegisteredEmail = ref('')
 
 // Form data
 const form = reactive({
@@ -14,9 +22,75 @@ const form = reactive({
   rememberMe: false
 })
 
+// Validation computed properties
+const emailValidation = computed(() => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  if (!form.email) return { isValid: true, message: '' }
+  return {
+    isValid: emailRegex.test(form.email),
+    message: emailRegex.test(form.email) ? '' : 'Email format is invalid'
+  }
+})
+
+const passwordValidation = computed(() => {
+  const password = form.password
+  if (!password) return { isValid: true, message: '', strength: 0 }
+  
+  const minLength = password.length >= 8
+  const maxLength = password.length <= 30
+  const hasUpperCase = /[A-Z]/.test(password)
+  const hasLowerCase = /[a-z]/.test(password)
+  const hasNumbers = /\d/.test(password)
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password)
+  
+  const requirements = [
+    { met: minLength, text: 'At least 8 characters' },
+    { met: maxLength, text: 'Maximum 30 characters' },
+    { met: hasUpperCase, text: 'One uppercase letter' },
+    { met: hasLowerCase, text: 'One lowercase letter' },
+    { met: hasNumbers, text: 'One number' },
+    { met: hasSpecialChar, text: 'One special character' }
+  ]
+  
+  const metRequirements = requirements.filter(req => req.met).length
+  const isValid = minLength && maxLength && hasUpperCase && hasLowerCase && hasNumbers && hasSpecialChar
+  
+  return {
+    isValid,
+    requirements,
+    strength: (metRequirements / requirements.length) * 100,
+    message: isValid ? 'Strong password' : 'Password must meet all requirements'
+  }
+})
+
+const confirmPasswordValidation = computed(() => {
+  if (!form.confirmPassword) return { isValid: true, message: '' }
+  return {
+    isValid: form.password === form.confirmPassword,
+    message: form.password === form.confirmPassword ? '' : 'Passwords do not match'
+  }
+})
+
+const isFormValid = computed(() => {
+  if (isLogin.value) {
+    return emailValidation.value.isValid && passwordValidation.value.isValid && form.email && form.password
+  } else {
+    return (
+      emailValidation.value.isValid &&
+      passwordValidation.value.isValid &&
+      confirmPasswordValidation.value.isValid &&
+      form.name &&
+      form.email &&
+      form.password &&
+      form.confirmPassword
+    )
+  }
+})
+
 // Methods
 const toggleAuthMode = () => {
   isLogin.value = !isLogin.value
+  clearMessages()
   // Reset form when switching modes
   Object.assign(form, {
     name: '',
@@ -31,22 +105,150 @@ const togglePassword = () => {
   showPassword.value = !showPassword.value
 }
 
-const handleSubmit = () => {
-  // TODO: Implement authentication logic
-  console.log('Form submitted:', { 
-    mode: isLogin.value ? 'login' : 'register',
-    data: form 
-  })
+const clearMessages = () => {
+  errorMessage.value = ''
+  successMessage.value = ''
+  needsEmailConfirmation.value = false
+}
+
+const resendConfirmation = async () => {
+  if (!lastRegisteredEmail.value) return
+  
+  isLoading.value = true
+  clearMessages()
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/resend-confirmation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: lastRegisteredEmail.value })
+    })
+
+    const data = await response.json()
+
+    if (response.ok) {
+      successMessage.value = 'Confirmation email sent! Please check your inbox.'
+    } else {
+      errorMessage.value = data.error || 'Failed to send confirmation email'
+    }
+  } catch (error) {
+    errorMessage.value = 'Network error. Please try again.'
+    console.error('Resend confirmation error:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const confirmEmailManual = async () => {
+  if (!lastRegisteredEmail.value) return
+  
+  isLoading.value = true
+  clearMessages()
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/confirm-email-manual`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: lastRegisteredEmail.value })
+    })
+
+    const data = await response.json()
+
+    if (response.ok) {
+      successMessage.value = 'Email confirmed! You can now login. ' + (data.warning || '')
+      needsEmailConfirmation.value = false
+      setTimeout(() => {
+        clearMessages()
+      }, 3000)
+    } else {
+      errorMessage.value = data.error || 'Failed to confirm email'
+    }
+  } catch (error) {
+    errorMessage.value = 'Network error. Please try again.'
+    console.error('Manual confirmation error:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const handleSubmit = async () => {
+  if (!isFormValid.value) {
+    errorMessage.value = 'Please fix all validation errors before submitting'
+    return
+  }
+
+  isLoading.value = true
+  clearMessages()
+
+  try {
+    const endpoint = isLogin.value ? '/auth/login' : '/auth/signup'
+    const payload = isLogin.value 
+      ? { email: form.email, password: form.password }
+      : { name: form.name, email: form.email, password: form.password }
+
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload)
+    })
+
+    const data = await response.json()
+
+    if (response.ok) {
+      successMessage.value = data.message
+      if (isLogin.value) {
+        // Store user session/token if needed
+        if (data.session?.access_token) {
+          localStorage.setItem('access_token', data.session.access_token)
+        }
+        // Redirect to dashboard or home
+        setTimeout(() => {
+          window.location.href = '/'
+        }, 1500)
+      } else {
+        // Show success message for registration
+        lastRegisteredEmail.value = form.email
+        setTimeout(() => {
+          isLogin.value = true
+          clearMessages()
+        }, 2000)
+      }
+    } else {
+      // Handle specific error messages
+      if (data.error && data.error.includes('Please confirm your email address')) {
+        needsEmailConfirmation.value = true
+        lastRegisteredEmail.value = form.email
+        errorMessage.value = data.error + ' Click below to resend confirmation email.'
+      } else if (data.error && (data.error.includes('Email signup') || data.error.includes('Email logins are disabled') || data.error.includes('signup_disabled'))) {
+        errorMessage.value = 'Email authentication is disabled. Please enable it in Supabase Dashboard → Authentication → Providers → Enable Email Provider and Allow new signups.'
+      } else {
+        errorMessage.value = data.error || 'An error occurred'
+      }
+    }
+  } catch (error) {
+    errorMessage.value = 'Network error. Please check if backend is running on port 5000.'
+    console.error('Auth error:', error)
+  } finally {
+    isLoading.value = false
+  }
 }
 
 const loginWithGoogle = () => {
   // TODO: Implement Google OAuth
   console.log('Login with Google')
+  errorMessage.value = 'Google OAuth integration coming soon!'
 }
 
 const loginWithGithub = () => {
   // TODO: Implement GitHub OAuth
   console.log('Login with GitHub')
+  errorMessage.value = 'GitHub OAuth integration coming soon!'
 }
 </script>
 
@@ -78,6 +280,41 @@ const loginWithGithub = () => {
             <p class="text-gray-600">
               {{ isLogin ? 'Sign in to your account' : 'Create your account to get started' }}
             </p>
+          </div>
+
+          <!-- Error/Success Messages -->
+          <div v-if="errorMessage" class="bg-red-50 border border-red-300 text-red-700 px-4 py-3 rounded-lg">
+            {{ errorMessage }}
+            <div v-if="needsEmailConfirmation" class="mt-3 space-y-2">
+              <button 
+                @click="resendConfirmation"
+                :disabled="isLoading"
+                class="inline-flex items-center px-3 py-1 mr-2 border border-transparent text-sm font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 disabled:opacity-50"
+              >
+                <svg v-if="isLoading" class="animate-spin -ml-1 mr-2 h-4 w-4 text-red-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                {{ isLoading ? 'Sending...' : 'Resend Email' }}
+              </button>
+              <button 
+                @click="confirmEmailManual"
+                :disabled="isLoading"
+                class="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 disabled:opacity-50"
+              >
+                <svg v-if="isLoading" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                {{ isLoading ? 'Confirming...' : 'Skip Email (Dev Mode)' }}
+              </button>
+              <div class="text-xs text-red-600 mt-1">
+                Or disable "Enable email confirmations" in Supabase Auth settings for development
+              </div>
+            </div>
+          </div>
+          <div v-if="successMessage" class="bg-green-50 border border-green-300 text-green-700 px-4 py-3 rounded-lg">
+            {{ successMessage }}
           </div>
 
           <!-- Social Login Buttons -->
@@ -141,9 +378,15 @@ const loginWithGithub = () => {
                 type="email"
                 required
                 v-model="form.email"
-                class="appearance-none relative block w-full px-3 py-3 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 focus:z-10 sm:text-sm transition-all duration-200"
+                :class="[
+                  'appearance-none relative block w-full px-3 py-3 border placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:z-10 sm:text-sm transition-all duration-200',
+                  emailValidation.isValid ? 'border-gray-300 focus:ring-green-500 focus:border-green-500' : 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                ]"
                 placeholder="Enter your email"
               />
+              <p v-if="!emailValidation.isValid && form.email" class="mt-1 text-sm text-red-600">
+                {{ emailValidation.message }}
+              </p>
             </div>
 
             <!-- Password Field -->
@@ -156,7 +399,10 @@ const loginWithGithub = () => {
                   :type="showPassword ? 'text' : 'password'"
                   required
                   v-model="form.password"
-                  class="appearance-none relative block w-full px-3 py-3 pr-10 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 focus:z-10 sm:text-sm transition-all duration-200"
+                  :class="[
+                    'appearance-none relative block w-full px-3 py-3 pr-10 border placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:z-10 sm:text-sm transition-all duration-200',
+                    passwordValidation.isValid || !form.password ? 'border-gray-300 focus:ring-green-500 focus:border-green-500' : 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                  ]"
                   placeholder="Enter your password"
                 />
                 <button
@@ -173,6 +419,32 @@ const loginWithGithub = () => {
                   </svg>
                 </button>
               </div>
+              
+              <!-- Password Strength Indicator -->
+              <div v-if="form.password && !isLogin" class="mt-2">
+                <div class="flex justify-between text-sm mb-1">
+                  <span class="text-gray-600">Password Strength</span>
+                  <span :class="passwordValidation.strength >= 100 ? 'text-green-600' : passwordValidation.strength >= 60 ? 'text-yellow-600' : 'text-red-600'">
+                    {{ passwordValidation.strength >= 100 ? 'Strong' : passwordValidation.strength >= 60 ? 'Medium' : 'Weak' }}
+                  </span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    :class="[
+                      'h-2 rounded-full transition-all duration-300',
+                      passwordValidation.strength >= 100 ? 'bg-green-500' : passwordValidation.strength >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+                    ]"
+                    :style="{ width: passwordValidation.strength + '%' }"
+                  ></div>
+                </div>
+                <ul class="mt-2 text-xs space-y-1">
+                  <li v-for="req in passwordValidation.requirements" :key="req.text" 
+                      :class="req.met ? 'text-green-600' : 'text-red-600'">
+                    <span :class="req.met ? 'text-green-500' : 'text-red-500'">{{ req.met ? '✓' : '✗' }}</span>
+                    {{ req.text }}
+                  </li>
+                </ul>
+              </div>
             </div>
 
             <!-- Confirm Password (Only for Register) -->
@@ -184,9 +456,15 @@ const loginWithGithub = () => {
                 type="password"
                 required
                 v-model="form.confirmPassword"
-                class="appearance-none relative block w-full px-3 py-3 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 focus:z-10 sm:text-sm transition-all duration-200"
+                :class="[
+                  'appearance-none relative block w-full px-3 py-3 border placeholder-gray-500 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:z-10 sm:text-sm transition-all duration-200',
+                  confirmPasswordValidation.isValid || !form.confirmPassword ? 'border-gray-300 focus:ring-green-500 focus:border-green-500' : 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                ]"
                 placeholder="Confirm your password"
               />
+              <p v-if="!confirmPasswordValidation.isValid && form.confirmPassword" class="mt-1 text-sm text-red-600">
+                {{ confirmPasswordValidation.message }}
+              </p>
             </div>
 
             <!-- Remember Me & Forgot Password -->
@@ -212,9 +490,21 @@ const loginWithGithub = () => {
             <div>
               <button
                 type="submit"
-                class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all duration-200 transform hover:scale-105 hover:shadow-lg"
+                :disabled="!isFormValid || isLoading"
+                :class="[
+                  'group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all duration-200 transform hover:shadow-lg',
+                  isFormValid && !isLoading 
+                    ? 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 hover:scale-105' 
+                    : 'bg-gray-400 cursor-not-allowed'
+                ]"
               >
-                {{ isLogin ? 'Sign In' : 'Create Account' }}
+                <span v-if="isLoading" class="absolute left-0 inset-y-0 flex items-center pl-3">
+                  <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </span>
+                {{ isLoading ? 'Processing...' : (isLogin ? 'Sign In' : 'Create Account') }}
               </button>
             </div>
 
