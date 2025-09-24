@@ -1,4 +1,4 @@
-# Nutrisense - *Smart Nutrition Recommendation System*
+# Nutrisense - *Smart Nutrition Recommendation System with Ministry of Health Standards*
 
 <div align="center">
   <img src="./Nutrisense.png" alt="Nutrisense Logo"/>
